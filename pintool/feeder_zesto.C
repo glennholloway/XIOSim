@@ -240,6 +240,13 @@ VOID PPointHandler(CONTROL_EVENT ev, VOID * v, CONTEXT * ctxt, VOID * ip, THREAD
 
             ExecMode = EXECUTION_MODE_FASTFORWARD;
             CODECACHE_FlushCache();
+
+            // XXX: This is wrong for multiplt pp. Leave it in just for cs246.
+            if(control.PinPointsActive())
+            {
+                StopSimulation(false);
+                PIN_ExitProcess(EXIT_SUCCESS);
+            }
         }
         break;
 
