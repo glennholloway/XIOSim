@@ -97,17 +97,6 @@ class bpred_t
   class bpred_state_cache_t ** bpredSCC;
   int SC_debt;
 
-  /* stats on branch type distributions */
-  counter_t num_lookups;
-  counter_t num_updates;
-  counter_t num_spec_updates;
-  counter_t num_cond;
-  counter_t num_call;
-  counter_t num_ret;
-  counter_t num_uncond;
-  counter_t num_dir_hits;  /* for *all* branches, conditional or not */
-  counter_t num_addr_hits; /* ditto */
-  counter_t num_hits;
   bool frozen;
 
   public:
@@ -170,6 +159,18 @@ class bpred_t
   class RAS_t* get_ras(void) { return ras; }
   class BTB_t* get_dir_btb(void) { return dirjmp_BTB; }
   class bpred_dir_t** get_dir_bpred(void) { return bpreds; }
+
+  /* stats on branch type distributions */
+  counter_t num_lookups;
+  counter_t num_updates;
+  counter_t num_spec_updates;
+  counter_t num_cond;
+  counter_t num_call;
+  counter_t num_ret;
+  counter_t num_uncond;
+  counter_t num_dir_hits;  /* for *all* branches, conditional or not */
+  counter_t num_addr_hits; /* ditto */
+  counter_t num_hits;
 
   private: /* called from constructor/destructor */
   void   init_state_cache_pool(int /* initial pool size */);
