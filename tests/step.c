@@ -31,5 +31,5 @@ int main(int argc, char** argv)
             __asm__("nop; nop; nop;");
         }
 
-    return (sum > 0);
+    return (sum <= 0);
 }
