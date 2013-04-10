@@ -36,7 +36,7 @@ void vf_controller_cs246_t::change_vf()
     tick_t delta_cycles = core->sim_cycle - last_cycle;
     float curr_ipc = delta_insn / (float) delta_cycles;
 	//using A.cfg, the maximum issue width is 2. 
-	if (curr_ipc < 0.8 )
+	if (curr_ipc < 0.6 )
 		core->cpu_speed = min_freq;
 	else
 		core->cpu_speed = max_freq;
