@@ -112,11 +112,6 @@ struct odep_t {
 /* Note, the memory table is per-byte indexed */
 struct spec_byte_t {
   byte_t val;
-#ifdef ZESTO_PIN
-  byte_t prev_val;
-  bool prev_val_valid;
-  uop_t * uop; /* backpointer for uop that is doing the speculative write */
-#endif
   md_addr_t addr;
   struct spec_byte_t * next;
   struct spec_byte_t * prev;
@@ -152,6 +147,7 @@ struct uop_t
     bool is_sta;  /* Is store-address uop? */
     bool is_std;  /* Is store-data uop? */
     bool is_nop;  /* Is NOP? */
+    bool is_fence; /* Is fence? */
 
     /* assume unique uop ID assigned when Mop cracked */
     seq_t Mop_seq;
@@ -252,16 +248,13 @@ struct Mop_t
   struct {
     md_addr_t PC;
     md_addr_t pred_NPC;
+    md_addr_t ftPC;
     md_inst_t inst;
     bool first_byte_requested;
     bool last_byte_requested;
 
     seq_t jeclear_action_id;
-#ifdef __cplusplus
     class bpred_state_cache_t * bpred_update; /* bpred update info */
-#else
-    void * bpred_update;
-#endif
   } fetch;
 
   struct {
@@ -296,7 +289,14 @@ struct Mop_t
     seq_t seq;
     bool zero_rep; /* TRUE if inst has REP of zero */
     bool spec_mode; /* this instruction is on wrong path? */
+    /* XXX: In most cases this can be inferred from NextPC != fetch.PC + inst.len,
+     * except when we encountered and unknown or overwritten instruction from
+     * the feeder. So we keep oracle info about branches from feeder. */
+    bool taken_branch;
     bool recover_inst; /* TRUE if the NPC for this Mop is wrong */
+    int padding1;
+    int padding2;
+    int padding3;
   } oracle;
 
   struct {
@@ -342,8 +342,6 @@ struct core_knobs_t
     const char *dirjmpbtb_opt_str;
     const char *indirjmpbtb_opt_str;
     const char *ras_opt_str;
-
-    bool warm_bpred;
   } fetch;
 
   struct {
@@ -426,8 +424,6 @@ struct core_knobs_t
     const char * DTLB_controller_opt_str;
     const char * DTLB2_controller_opt_str;
 
-    bool warm_caches;
-    int syscall_memory_latency;
     bool DL1_rep_req;
   } memory;
 

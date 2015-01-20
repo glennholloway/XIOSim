@@ -371,56 +371,16 @@ void core_commit_IO_DPM_t::IO_step(void)
   stall_reason = CSTALL_NONE;
   int branches_committed = 0;
 
-  /* This is just a deadlock watchdog.  If something got messed up
+  /* This is just a deadlock watchdog. If something got messed up
      in the pipeline and no forward progress is being made, this
-     code will eventually detect it and flush the pipeline in an
-     attempt to un-wedge the processor.  If the processor then
-     deadlocks again without having first made any more forward
-     progress, we give up and kill the simulator. */
+     code will eventually detect it. A global watchdog will check
+     if any core is making progress and accordingly if not.*/
   if(core->current_thread->active && ((core->sim_cycle - core->exec->last_completed) > deadlock_threshold))
   {
-    if(core->exec->last_completed_count == core->stat.eio_commit_insn)
-    {
-      char buf[256];
-      snprintf(buf,sizeof(buf),"At cycle %llu, core[%d] has not completed a uop in %d cycles... definite deadlock",core->sim_cycle,core->current_thread->id,deadlock_threshold);
+    deadlocked = true; 
 #ifdef ZTRACE
-      ztrace_print("DEADLOCK DETECTED: TERMINATING SIMULATION");
+    ztrace_print(core->id, "Possible deadlock detected.");
 #endif
-
-      struct Mop_t * last_Mop = core->oracle->get_oldest_Mop();
-      if(last_Mop)
-      {
-        warn("Dumping possible cause: ");
-        md_print_insn(last_Mop, stderr);
-        fprintf(stderr, "\n");
-        int commit_ind = last_Mop->commit.commit_index;
-        fprintf(stderr, "Last non-commited uop: %d. Dumping stats\n", commit_ind); 
-        dump_uop_alloc(&last_Mop->uop[commit_ind]);
-        dump_uop_timing(&last_Mop->uop[commit_ind]);
-      }
-
-      //zesto_fatal(buf,(void)0);
-      zesto_assert(false, (void)0);
-    }
-    else
-    {
-      warn("At cycle %llu, core[%d] has not completed a uop in %d cycles... possible deadlock, flushing pipeline",core->sim_cycle,core->current_thread->id,deadlock_threshold);
-#ifdef ZTRACE
-      ztrace_print("DEADLOCK DETECTED: FLUSHING PIPELINE");
-#endif
-
-      /* flush the entire pipeline, correct path or not... */
-      core->oracle->complete_flush();
-      /*core->commit->*/recover();
-      core->exec->recover();
-      core->alloc->recover();
-      core->decode->recover();
-      core->fetch->recover(core->current_thread->regs.regs_NPC);
-      ZESTO_STAT(stat_add_sample(core->stat.commit_stall, (int)CSTALL_EMPTY);)
-      ZESTO_STAT(core->stat.commit_deadlock_flushes++;)
-      core->exec->last_completed = core->sim_cycle; /* so we don't do this again next cycle */
-      core->exec->last_completed_count = core->stat.eio_commit_insn;
-    }
     return;
   }
 
@@ -485,8 +445,8 @@ void core_commit_IO_DPM_t::IO_step(void)
 #endif
           if(Mop->fetch.bpred_update)
           {
-            core->fetch->bpred->update(Mop->fetch.bpred_update,Mop->decode.opflags,
-                Mop->fetch.PC, Mop->fetch.PC+Mop->fetch.inst.len, Mop->decode.targetPC, Mop->oracle.NextPC, (Mop->oracle.NextPC != (Mop->fetch.PC + Mop->fetch.inst.len)));
+            core->fetch->bpred->update(Mop->fetch.bpred_update, Mop->decode.opflags,
+                Mop->fetch.PC, Mop->fetch.ftPC, Mop->decode.targetPC, Mop->oracle.NextPC, Mop->oracle.taken_branch);
             core->fetch->bpred->return_state_cache(Mop->fetch.bpred_update);
             Mop->fetch.bpred_update = NULL;
           }
@@ -599,10 +559,9 @@ void core_commit_IO_DPM_t::IO_step(void)
         /* Update stats */
         if(Mop->uop[Mop->decode.last_uop_index].decode.EOM)
         {
-          core->stat.eio_commit_insn++;
           total_commit_insn ++;
           ZESTO_STAT(core->stat.commit_insn++;)
-          ZESTO_STAT(core->stat.commit_bytes += Mop->fetch.inst.len;) /* REP counts as only 1 fetch */
+          ZESTO_STAT(core->stat.commit_bytes += Mop->fetch.inst.len;)
         }
 
         if(Mop->decode.is_ctrl)
@@ -641,8 +600,6 @@ void core_commit_IO_DPM_t::IO_step(void)
             when_rep_fetched = Mop->timing.when_fetched;
             zesto_assert(Mop->timing.when_fetched != TICK_T_MAX,(void)0);
             zesto_assert(Mop->timing.when_fetch_started != TICK_T_MAX,(void)0);
-            //zesto_assert(Mop->timing.when_fetched != 0,(void)0);
-            //zesto_assert(Mop->timing.when_fetch_started != 0,(void)0);
             when_rep_decode_started = Mop->timing.when_decode_started;
             when_rep_commit_started = Mop->timing.when_commit_started;
           }
@@ -727,26 +684,16 @@ void core_commit_IO_DPM_t::IO_step(void)
           fprintf(stderr,"# Committed uop ");
         fprintf(stderr,"limit reached for core %d.\n",core->current_thread->id);
 
-        simulated_processes_remaining--;
         core->current_thread->active = false;
         core->fetch->bpred->freeze_stats();
         core->exec->freeze_stats();
         cache_freeze_stats(core);
         /* start this core over */
 
-        if(simulated_processes_remaining <= 0)
-          longjmp(sim_exit_buf, /* exitcode + fudge */0 + 1);
+        fatal("Per-thread limits not supported now");
       }
     }
 
-    /* Reset the trace (eio file input) if we've hit the end of the
-       trace.  This is used in multi-core simulation mode to keep
-       cores that have reached their simulation limits busy. */
-    if (trace_limit && (core->stat.eio_commit_insn >= trace_limit))
-    {
-      core->stat.eio_commit_insn = 0;
-      core->oracle->reset_execution();
-    }
   }
 
   ZESTO_STAT(stat_add_sample(core->stat.commit_stall, (int)stall_reason);)

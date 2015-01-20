@@ -72,6 +72,8 @@ class core_exec_IO_DPM_t:public core_exec_t
   virtual void STQ_squash_sta(struct uop_t * const dead_uop);
   virtual void STQ_squash_std(struct uop_t * const dead_uop);
   virtual void STQ_squash_senior(void);
+  virtual void STQ_set_addr(struct uop_t * const uop);
+  virtual void STQ_set_data(struct uop_t * const uop);
 
   virtual void recover_check_assertions(void);
 
@@ -81,7 +83,6 @@ class core_exec_IO_DPM_t:public core_exec_t
   virtual void exec_insert(struct uop_t * const uop);
   virtual bool port_available(int port_ind);
   virtual bool exec_fused_ST(struct uop_t * const uop);
-  virtual void update_execution_otags(tick_t old_sim_cycle);
 
   /* Stubs in IO pipline -- compatibility only */
   virtual void insert_ready_uop(struct uop_t * const uop);
@@ -273,7 +274,7 @@ core_exec_IO_DPM_t::core_exec_IO_DPM_t(struct core_t * const arg_core):
 
       for(int c=0;c<4;c++)
       {
-        switch(mytoupper(knobs->memory.DL2_MSHR_cmd[c]))
+        switch(toupper(knobs->memory.DL2_MSHR_cmd[c]))
         {
           case 'R': core->memory.DL2->MSHR_cmd_order[c] = CACHE_READ; R_seen = true; break;
           case 'W': core->memory.DL2->MSHR_cmd_order[c] = CACHE_WRITE; W_seen = true; break;
@@ -339,7 +340,7 @@ core_exec_IO_DPM_t::core_exec_IO_DPM_t(struct core_t * const arg_core):
 
     for(int c=0;c<4;c++)
     {
-      switch(mytoupper(knobs->memory.DL1_MSHR_cmd[c]))
+      switch(toupper(knobs->memory.DL1_MSHR_cmd[c]))
       {
         case 'R': core->memory.DL1->MSHR_cmd_order[c] = CACHE_READ; R_seen = true; break;
         case 'W': core->memory.DL1->MSHR_cmd_order[c] = CACHE_WRITE; W_seen = true; break;
@@ -509,10 +510,7 @@ core_exec_IO_DPM_t::core_exec_IO_DPM_t(struct core_t * const arg_core):
 
   memdep = memdep_create(core, knobs->exec.memdep_opt_str);
 
-  if (core->memory.DL2)
-    core->memory.mem_repeater = repeater_create(core->knobs->exec.repeater_opt_str, core, "MR1", core->memory.DL2);
-  else
-    core->memory.mem_repeater = repeater_create(core->knobs->exec.repeater_opt_str, core, "MR1", core->memory.DL1);
+  core->memory.mem_repeater = repeater_create(core->knobs->exec.repeater_opt_str, core, "MR1", core->memory.DL1);
 
   check_for_work = true;
 }
@@ -820,7 +818,7 @@ void core_exec_IO_DPM_t::load_writeback(struct uop_t * const uop)
     zesto_assert(uop->timing.when_completed == TICK_T_MAX,(void)0);
 
     uop->timing.when_completed = core->sim_cycle+fp_penalty;
-    last_completed = core->sim_cycle+fp_penalty; /* for deadlock detection */
+    update_last_completed(core->sim_cycle+fp_penalty); /* for deadlock detection */
     if(uop->decode.is_ctrl && (uop->Mop->oracle.NextPC != uop->Mop->fetch.pred_NPC)) /* XXX: for RETN */
     {
       core->oracle->pipe_recover(uop->Mop,uop->Mop->oracle.NextPC);
@@ -1283,7 +1281,7 @@ void core_exec_IO_DPM_t::LDST_exec(void)
                 zesto_assert(uop->timing.when_completed == TICK_T_MAX,(void)0);
                 uop->timing.when_completed = core->sim_cycle+fp_penalty;
                 uop->timing.when_exec = core->sim_cycle+fp_penalty;
-                last_completed = core->sim_cycle+fp_penalty; /* for deadlock detection */
+                update_last_completed(core->sim_cycle+fp_penalty); /* for deadlock detection */
 
                 /* when_issued should be != TICK_T_MAX; in a few cases I was
                    finding it set; haven't had time to fully debug this yet,
@@ -1676,6 +1674,16 @@ void core_exec_IO_DPM_t::LDQ_schedule(void)
     }
     index = modinc(index,knobs->exec.LDQ_size);
   }
+}
+
+void core_exec_IO_DPM_t::STQ_set_addr(struct uop_t * const uop)
+{
+  zesto_assert(false, (void)0);
+}
+
+void core_exec_IO_DPM_t::STQ_set_data(struct uop_t * const uop)
+{
+  zesto_assert(false, (void)0);
 }
 
 //Substituted for ::step
@@ -2080,7 +2088,7 @@ bool core_exec_IO_DPM_t::STQ_deallocate_std(struct uop_t * const uop)
        request has entered into the cache hierarchy. */
 
     /* Send to DL1 */
-  if(send_to_dl1) {
+    if(send_to_dl1) {
       struct uop_t * dl1_uop = core->get_uop_array(1);
       dl1_uop->core = core;
       dl1_uop->alloc.STQ_index = uop->alloc.STQ_index;
@@ -2440,59 +2448,6 @@ void core_exec_IO_DPM_t::dump_payload()
   }
 }
 
-/* This is a gross hack to compensate for putting cores to sleep.
- * Since we do a lot of scheduling (can_issue_IO()) based on tags,
- * which are absolute cycle values, when we put a core to sleep for
- * X cycles and then resume, all those tags are now in the past, and
- * anyone can schedule violating tons of constraints.
- * To fix, we just got over the execution pipe and add X cycles to
- * all tag values. This is ok in terms of accuracy, since a real
- * system will probably never use absolute cycles in the first place.
- */
-void core_exec_IO_DPM_t::update_execution_otags(tick_t old_sim_cycle)
-{
-  core_knobs_t* knobs = core->knobs;
-
-  sqword_t cycle_diff = core->sim_cycle - old_sim_cycle;
-
-  /* For now, do this only for ops in execution units,
-   * when_otag_ready is assigned and used for them.
-   * XXX: The other place where this may cause trouble is loads */
-  for(int i=0;i<knobs->exec.num_exec_ports;i++)
-  {
-    struct uop_t * uop;
-    for(int j=0;j<port[i].num_FU_types;j++)
-    {
-      enum md_fu_class FU_type = port[i].FU_types[j];
-      struct ALU_t * FU = port[i].FU[FU_type];
-      if(FU && (FU->occupancy > 0))
-      {
-        for (int stage = FU->latency-1; stage >= 0; stage--)
-        {
-          uop = FU->pipe[stage].uop;
-
-          if(!uop)
-            continue;
-
-#ifdef ZTRACE
-          ztrace_print(uop, "e|ALU|correcting otag with %lld delta", cycle_diff);
-#endif
-          /* Update direct dependants timing information */
-          struct odep_t * odep = uop->exec.odep_uop;
-          while(odep)
-          {
-            odep->uop->timing.when_ival_ready[odep->op_num] += cycle_diff;
-            odep = odep->next;
-          }
-
-          /* This will make sure indirect dependants don't issue out-of-order */
-          uop->timing.when_otag_ready += cycle_diff;
-        }
-      }
-    }
-  }
-}
-
 void core_exec_IO_DPM_t::step()
 {
   struct core_knobs_t * knobs = core->knobs;
@@ -2686,7 +2641,7 @@ void core_exec_IO_DPM_t::step()
          if(uop->timing.when_completed == TICK_T_MAX)
          {
             uop->timing.when_completed = core->sim_cycle+fp_penalty;
-            last_completed = core->sim_cycle+fp_penalty; /* for deadlock detection*/
+            update_last_completed(core->sim_cycle+fp_penalty); /* for deadlock detection*/
          }
          //when_completed can only be set if waiting for fp_penalty
          else

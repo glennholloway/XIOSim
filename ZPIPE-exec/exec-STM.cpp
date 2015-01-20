@@ -75,6 +75,8 @@ class core_exec_STM_t:public core_exec_t
   virtual void STQ_squash_sta(struct uop_t * const dead_uop);
   virtual void STQ_squash_std(struct uop_t * const dead_uop);
   virtual void STQ_squash_senior(void);
+  virtual void STQ_set_addr(struct uop_t * const uop);
+  virtual void STQ_set_data(struct uop_t * const uop);
 
   virtual void recover_check_assertions(void);
 
@@ -84,8 +86,7 @@ class core_exec_STM_t:public core_exec_t
   virtual void exec_insert(struct uop_t * const uop);
   virtual bool port_available(int port_ind);
   virtual bool exec_fused_ST(struct uop_t * const uop);
-  virtual void update_execution_otags(tick_t old_sim_cycle);
-	
+
   
   protected:
   struct readyQ_node_t * readyQ_free_pool; /* for scheduling readyQ's */
@@ -242,7 +243,7 @@ core_exec_STM_t::core_exec_STM_t(struct core_t * arg_core):
 
       for(int c=0;c<4;c++)
       {
-        switch(mytoupper(knobs->memory.DL2_MSHR_cmd[c]))
+        switch(toupper(knobs->memory.DL2_MSHR_cmd[c]))
         {
           case 'R': core->memory.DL2->MSHR_cmd_order[c] = CACHE_READ; R_seen = true; break;
           case 'W': core->memory.DL2->MSHR_cmd_order[c] = CACHE_WRITE; W_seen = true; break;
@@ -308,7 +309,7 @@ core_exec_STM_t::core_exec_STM_t(struct core_t * arg_core):
 
     for(int c=0;c<4;c++)
     {
-      switch(mytoupper(knobs->memory.DL1_MSHR_cmd[c]))
+      switch(toupper(knobs->memory.DL1_MSHR_cmd[c]))
       {
         case 'R': core->memory.DL1->MSHR_cmd_order[c] = CACHE_READ; R_seen = true; break;
         case 'W': core->memory.DL1->MSHR_cmd_order[c] = CACHE_WRITE; W_seen = true; break;
@@ -446,10 +447,7 @@ core_exec_STM_t::core_exec_STM_t(struct core_t * arg_core):
     }
   }
 
-  if (core->memory.DL2)
-    core->memory.mem_repeater = repeater_create(core->knobs->exec.repeater_opt_str, core, "MR1", core->memory.DL2);
-  else
-    core->memory.mem_repeater = repeater_create(core->knobs->exec.repeater_opt_str, core, "MR1", core->memory.DL1);
+  core->memory.mem_repeater = repeater_create(core->knobs->exec.repeater_opt_str, core, "MR1", core->memory.DL1);
 
   check_for_work = true;
 }
@@ -820,7 +818,7 @@ void core_exec_STM_t::load_writeback(struct uop_t * const uop)
     uop->exec.ovalue_valid = true;
     zesto_assert(uop->timing.when_completed == TICK_T_MAX,(void)0);
     uop->timing.when_completed = core->sim_cycle;
-    last_completed = core->sim_cycle; /* for deadlock detection */
+    update_last_completed(core->sim_cycle); /* for deadlock detection */
     if(uop->decode.is_ctrl && (uop->Mop->oracle.NextPC != uop->Mop->fetch.pred_NPC)) /* XXX: for RETN */
     {
       core->oracle->pipe_recover(uop->Mop,uop->Mop->oracle.NextPC);
@@ -976,7 +974,7 @@ void core_exec_STM_t::LDST_exec(void)
                 uop->exec.ovalue = STQ[j].value;
                 uop->exec.ovalue_valid = true;
                 uop->timing.when_completed = core->sim_cycle;
-                last_completed = core->sim_cycle; /* for deadlock detection */
+                update_last_completed(core->sim_cycle); /* for deadlock detection */
                 LDQ[uop->alloc.LDQ_index].hit_in_STQ = true;
 
                 if(uop->decode.is_ctrl && (uop->Mop->oracle.NextPC != uop->Mop->fetch.pred_NPC)) /* for RETN */
@@ -1105,6 +1103,16 @@ void core_exec_STM_t::LDQ_schedule(void)
     }
     index = modinc(index,knobs->exec.LDQ_size);
   }
+}
+
+void core_exec_STM_t::STQ_set_addr(struct uop_t * const uop)
+{
+  zesto_assert(false, (void)0);
+}
+
+void core_exec_STM_t::STQ_set_data(struct uop_t * const uop)
+{
+  zesto_assert(false, (void)0);
 }
 
 /* Process execution (in ALUs) of uops */
@@ -1256,7 +1264,7 @@ void core_exec_STM_t::ALU_exec(void)
 
               zesto_assert(uop->timing.when_completed == TICK_T_MAX,(void)0);
               uop->timing.when_completed = core->sim_cycle;
-              last_completed = core->sim_cycle; /* for deadlock detection */
+              update_last_completed(core->sim_cycle); /* for deadlock detection */
 
               /* bypass output value to dependents */
               struct odep_t * odep = uop->exec.odep_uop;
@@ -1644,11 +1652,6 @@ bool core_exec_STM_t::exec_fused_ST(struct uop_t * const curr_uop)
 }
 
 bool core_exec_STM_t::exec_empty()
-{
-  fatal("shouldn't be called");
-}
-
-void core_exec_STM_t::update_execution_otags(tick_t old_sim_cycle)
 {
   fatal("shouldn't be called");
 }

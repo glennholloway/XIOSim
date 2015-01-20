@@ -73,6 +73,8 @@
  */
 
 #include <limits.h>
+#include <ctype.h>
+
 #include "thread.h"
 #include "stats.h"
 #include "zesto-core.h"
@@ -127,7 +129,7 @@ struct cache_t * cache_create(
 
   cp->core = core;
 
-  switch(mytoupper(rp)) {
+  switch(toupper(rp)) {
     case 'L': replacement_policy = REPLACE_LRU; break;
     case 'M': replacement_policy = REPLACE_MRU; break;
     case 'R': replacement_policy = REPLACE_RANDOM; break;
@@ -136,17 +138,17 @@ struct cache_t * cache_create(
     case 'C': replacement_policy = REPLACE_CLOCK; break;
     default: fatal("unrecognized cache replacement policy");
   }
-  switch(mytoupper(ap)) {
+  switch(toupper(ap)) {
     case 'W': allocate_policy = WRITE_ALLOC; break;
     case 'N': allocate_policy = NO_WRITE_ALLOC; break;
     default: fatal("unrecognized cache allocation policy (W=write-alloc,N=no-write-alloc)");
   }
-  switch(mytoupper(wp)) {
+  switch(toupper(wp)) {
     case 'T': write_policy = WRITE_THROUGH; break;
     case 'B': write_policy = WRITE_BACK; break;
     default: fatal("unrecognized cache write policy (T=write-Through,B=write-Back)");
   }
-  switch(mytoupper(wc)) {
+  switch(toupper(wc)) {
     case 'C': write_combining = true; break;
     case 'N': write_combining = false; break;
     default: fatal("unrecognized cache write combining option (C=write-Combining,N=No-write-combining)");
@@ -2042,7 +2044,7 @@ static void cache_process_pipe(struct cache_t * const cp, int start_point)
               if(!ca->prev_cp && ca->op && (ca->action_id == ca->get_action_id(ca->op)))
               {
 #ifdef ZTRACE
-                ztrace_print("%s|hit",cp->name);
+                CACHE_ZTRACE("%s|hit",cp->name);
 #endif
                 ca->cb(ca->op);
               }
@@ -2254,7 +2256,7 @@ static void cache_process_MSHR(struct cache_t * const cp, int start_point)
                   if(MSHR->miss_cb && MSHR->op && (MSHR->action_id == MSHR->get_action_id(MSHR->op)))
                   {
 #ifdef ZTRACE
-                    ztrace_print("%s|miss",cp->name);
+                    CACHE_ZTRACE("%s|miss",cp->name);
 #endif
                     MSHR->miss_cb_invoked = true;
                     MSHR->miss_cb(MSHR->op,BIG_LATENCY);
@@ -2296,7 +2298,7 @@ static void cache_process_MSHR(struct cache_t * const cp, int start_point)
                       {
                         miss_latency = BIG_LATENCY;
 #ifdef ZTRACE
-                        ztrace_print("%s|miss",cp->name);
+                        CACHE_ZTRACE("%s|miss",cp->name);
 #endif
                       }
                       MSHR->miss_cb(MSHR->op, miss_latency); /* restarts speculative scheduling */
@@ -2360,7 +2362,7 @@ static void cache_process_MSHR(struct cache_t * const cp, int start_point)
                   if(MSHR->miss_cb && MSHR->op && (MSHR->action_id == MSHR->get_action_id(MSHR->op)))
                   {
 #ifdef ZTRACE
-                    ztrace_print("%s|miss",cp->name);
+                    CACHE_ZTRACE("%s|miss",cp->name);
 #endif
                     MSHR->miss_cb_invoked = true;
                     MSHR->miss_cb(MSHR->op,BIG_LATENCY);
@@ -2398,7 +2400,7 @@ static void cache_process_MSHR(struct cache_t * const cp, int start_point)
                       {
                         miss_latency = BIG_LATENCY;
 #ifdef ZTRACE
-                        ztrace_print("%s|miss",cp->name);
+                        CACHE_ZTRACE("%s|miss",cp->name);
 #endif
                       }
                       MSHR->miss_cb(MSHR->op, miss_latency); /* restarts speculative scheduling */
