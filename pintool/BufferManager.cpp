@@ -13,37 +13,12 @@
 #include <queue>
 
 #include "feeder.h"
-#include "Buffer.h"
+#include "../buffer.h"
 #include "BufferManager.h"
 
 extern int num_cores;
 extern bool consumers_sleep;
 extern PIN_SEMAPHORE consumer_sleep_lock;
-
-ostream& operator<< (ostream &out, handshake_container_t &hand)
-{
-  out << "hand:" << " ";
-  out << hand.flags.valid;
-  out << hand.flags.isFirstInsn;
-  out << hand.flags.isLastInsn;
-  out << hand.flags.killThread;
-  out << " ";
-  out << hand.mem_buffer.size();
-  out << " ";
-  out << "pc:" << hand.handshake.pc << " ";
-  out << "npc:" << hand.handshake.npc << " ";
-  out << "tpc:" << hand.handshake.tpc << " ";
-  out << "brtaken:" << hand.handshake.brtaken << " ";
-  out << "ins:" << hand.handshake.ins << " ";
-  out << "flags:" << hand.handshake.sleep_thread << hand.handshake.resume_thread;
-  out  << hand.handshake.real;
-  out << hand.handshake.in_critical_section;
-  out << " slicenum:" << hand.handshake.slice_num << " ";
-  out << "feederslicelen:" << hand.handshake.feeder_slice_length << " ";
-  out << "feedersliceweight:" << hand.handshake.slice_weight_times_1000 << " ";
-  out.flush();
-  return out;
-}
 
 BufferManager::BufferManager()
   :numThreads_(0)
@@ -58,6 +33,25 @@ BufferManager::BufferManager()
   bridgeDirs_.push_back("/dev/shm/");
   bridgeDirs_.push_back("/tmp/");
   bridgeDirs_.push_back("./");
+
+  // Reserve space in all maps for 16 cores
+  // This reduces the incidence of an annoying race, see
+  // comment in empty()
+  int probable_cores = 16;
+  locks_.reserve(probable_cores);
+  pool_.reserve(probable_cores);
+  logs_.reserve(probable_cores);
+  queueSizes_.reserve(probable_cores);
+  fakeFile_.reserve(probable_cores);
+  consumeBuffer_.reserve(probable_cores);
+  produceBuffer_.reserve(probable_cores);
+  fileEntryCount_.reserve(probable_cores);
+  fileNames_.reserve(probable_cores);
+  fileCounts_.reserve(probable_cores);
+  readBufferSize_.reserve(probable_cores);
+  readBuffer_.reserve(probable_cores);
+  writeBufferSize_.reserve(probable_cores);
+  writeBuffer_.reserve(probable_cores);
 }
 
 BufferManager::~BufferManager()
@@ -86,7 +80,6 @@ handshake_container_t* BufferManager::front(THREADID tid, bool isLocal)
     lk_unlock(locks_[tid]);
     while(consumers_sleep) {
       PIN_SemaphoreWait(&consumer_sleep_lock);
-      //PIN_Sleep(250);
     }
     PIN_Yield();
     lk_lock(locks_[tid], tid+1);
@@ -139,7 +132,16 @@ handshake_container_t* BufferManager::back(THREADID tid)
 
 bool BufferManager::empty(THREADID tid)
 {
+  // There is a race for initializing the BufferManager maps,
+  // where sometimes a new thread is calling allocateThread(),
+  // and an already existing thread is calling empty().
+  // This hack seems to prevent it, there's probably a much
+  // better way to do this though...
+  if(!locks_[tid]) {
+    PIN_Sleep(1000);
+  }
   assert(locks_[tid]);
+
   lk_lock(locks_[tid], tid+1);
   bool result = queueSizes_[tid] == 0;
   lk_unlock(locks_[tid]);
@@ -181,9 +183,12 @@ void BufferManager::producer_done(THREADID tid, bool keepLock)
   if(!keepLock) {
     reserveHandshake(tid);
   }
+  else {
+    pool_[tid]++; // Expand in case the last handshakes need space
+  }
 
   if(produceBuffer_[tid]->full()) {// || ( (consumeBuffer_[tid]->size() == 0) && (fileEntryCount_[tid] == 0))) {
-#ifdef DEBUG
+#if defined(DEBUG) || defined(ZESTO_PIN_DBG)
     int produceSize = produceBuffer_[tid]->size();
 #endif
     bool checkSpace = !keepLock;
@@ -274,14 +279,6 @@ uint64_t BufferManager::size(THREADID tid)
  */
 void BufferManager::reserveHandshake(THREADID tid)
 {
-  int64_t queueLimit;
-  if(num_cores > 1) {
-    queueLimit = 5000000001;
-  }
-  else {
-    queueLimit = 5000000001;
-  }
-
   if(pool_[tid] > 0) {
     return;
   }
@@ -294,7 +291,7 @@ void BufferManager::reserveHandshake(THREADID tid)
     enable_consumers();
     disable_producers();
 
-    PIN_Sleep(1000);
+    PIN_Sleep(500);
 
     lk_lock(locks_[tid], tid+1);
 
@@ -306,19 +303,20 @@ void BufferManager::reserveHandshake(THREADID tid)
     disable_consumers();
     enable_producers();
 
-    //    if(num_cores == 1 || (!useRealFile_)) {
-    //      continue;
-    //    }
-
-    if(queueSizes_[tid] < queueLimit) {
-      pool_[tid] += 50000;
-#ifdef ZESTO_PIN_DBG
-      cerr << tid << " [reserveHandshake()]: Increasing file up to " << queueSizes_[tid] + pool_[tid] << endl;
-#endif
+    if(pool_[tid] > 0) {
       break;
     }
-    cerr << tid << " [reserveHandshake()]: File size too big to expand, abort():" << queueSizes_[tid] << endl;
-    this->abort();
+
+    if(num_cores == 1) {
+      continue;
+    }
+
+    pool_[tid] += 50000;
+
+#ifdef ZESTO_PIN_DBG
+    cerr << tid << " [reserveHandshake()]: Increasing file up to " << queueSizes_[tid] + pool_[tid] << endl;
+#endif
+    break;
   }
 }
 
@@ -379,7 +377,7 @@ void BufferManager::copyProducerToFileReal(THREADID tid, bool checkSpace)
   if(checkSpace) {
     for(int i = 0; i < (int)bridgeDirs_.size(); i++) {
       int space = getKBFreeSpace(bridgeDirs_[i]);
-      if(space > 2000000) { // 2 GB
+      if(space > 2500000) { // 2.5 GB
         fileNames_[tid].push_back(genFileName(bridgeDirs_[i]));
         madeFile = true;
         break;
@@ -388,6 +386,11 @@ void BufferManager::copyProducerToFileReal(THREADID tid, bool checkSpace)
     }
     if(madeFile == false) {
       cerr << "Nowhere left for the poor file bridge :(" << endl;
+      cerr << "BridgeDirs:" << endl;
+      for(int i = 0; i < (int)bridgeDirs_.size(); i++) {
+        int space = getKBFreeSpace(bridgeDirs_[i]);
+        cerr << bridgeDirs_[i] << ":" << space << " in KB" << endl;
+      }
       this->abort();
     }
   }
@@ -403,7 +406,6 @@ void BufferManager::copyProducerToFileReal(THREADID tid, bool checkSpace)
     cerr << "Pipe open error: " << fd << " Errcode:" << strerror(errno) << endl;
     this->abort();
   }
-
   while(!produceBuffer_[tid]->empty()) {
     writeHandshake(tid, fd, produceBuffer_[tid]->front());
     produceBuffer_[tid]->pop();
@@ -476,8 +478,12 @@ static ssize_t do_write(const int fd, const void* buff, const size_t size)
   ssize_t bytesWritten = 0;
   do {
     ssize_t res = write(fd, (void*)((char*)buff + bytesWritten), size - bytesWritten);
-    if(res == -1)
+    if(res == -1) {
+      cerr << "failed write!" << endl;
+      cerr << "bytesWritten:" << bytesWritten << endl;
+      cerr << "size:" << size << endl;
       return -1;
+    }
     bytesWritten += res;
   } while (bytesWritten < (ssize_t)size);
   return bytesWritten;
@@ -520,6 +526,20 @@ void  BufferManager::writeHandshake(THREADID tid, int fd, handshake_container_t*
   int bytesWritten = do_write(fd, writeBuffer, totalBytes);
   if(bytesWritten == -1) {
     cerr << "Pipe write error: " << bytesWritten << " Errcode:" << strerror(errno) << endl;
+
+    cerr << "Opened to write: " << fileNames_[tid].back() << endl;
+    cerr << "Thread Id:" << tid << endl;
+    cerr << "fd:" << fd << endl;
+    cerr << "Queue Size:" << queueSizes_[tid] << endl;
+    cerr << "ConsumeBuffer size:" << consumeBuffer_[tid]->size() << endl;
+    cerr << "ProduceBuffer size:" << produceBuffer_[tid]->size() << endl;
+    cerr << "file entry count:" << fileEntryCount_[tid] << endl;
+
+    cerr << "BridgeDirs:" << endl;
+    for(int i = 0; i < (int)bridgeDirs_.size(); i++) {
+      int space = getKBFreeSpace(bridgeDirs_[i]);
+      cerr << bridgeDirs_[i] << ":" << space << " in KB" << endl;
+    }
     this->abort();
   }
   if(bytesWritten != totalBytes) {
@@ -666,10 +686,8 @@ string BufferManager::genFileName(string path)
 
 void BufferManager::resetPool(THREADID tid)
 {
-  int poolFactor = 1;
-  if(num_cores > 1) {
-    poolFactor = 6;
-  }
+  int poolFactor = 3;
+  assert(poolFactor >= 1);
   pool_[tid] = (consumeBuffer_[tid]->capacity() + produceBuffer_[tid]->capacity()) * poolFactor;
   //  pool_[tid] = 2000000000;
 }
@@ -678,5 +696,5 @@ int BufferManager::getKBFreeSpace(string path)
 {
   struct statvfs fsinfo;
   statvfs(path.c_str(), &fsinfo);
-  return (fsinfo.f_bsize * fsinfo.f_bfree / 1024);
+  return ((unsigned long long)fsinfo.f_bsize * (unsigned long long)fsinfo.f_bavail / 1024);
 }

@@ -16,6 +16,7 @@ class core_commit_DPM_t:public core_commit_t
                        CSTALL_EMPTY,     /* ROB is empty, nothing to commit */
                        CSTALL_JECLEAR_INFLIGHT, /* Mop is done, but its jeclear hasn't been handled yet */
                        CSTALL_MAX_BRANCHES, /* exceeded maximum number of branches committed per cycle */
+                       CSTALL_STQ, /* Store can't deallocate from STQ */
                        CSTALL_num
                      };
 
@@ -72,7 +73,8 @@ const char *core_commit_DPM_t::commit_stall_str[CSTALL_num] = {
   "oldest inst partially done ",
   "ROB is empty               ",
   "Mop done, jeclear in flight",
-  "branch commit limit        "
+  "branch commit limit        ",
+  "store can't deallocate     "
 };
 
 /*******************/
@@ -193,7 +195,7 @@ core_commit_DPM_t::reg_stats(struct stat_sdb_t * const sdb)
 
   stat_reg_note(sdb,"#### TIMING STATS ####");
   sprintf(buf,"c%d.sim_cycle",arch->id);
-  stat_reg_qword(sdb, true, buf, "total number of cycles when last instruction (or uop) committed", (qword_t*) &core->stat.final_sim_cycle, core->stat.final_sim_cycle, TRUE, NULL);
+  stat_reg_qword(sdb, true, buf, "total number of cycles when last instruction (or uop) committed", (qword_t*) &core->stat.final_sim_cycle, 0, TRUE, NULL);
   /* cumulative slip cycles (not printed) */
   sprintf(buf,"c%d.Mop_fetch_Tslip",core->current_thread->id);
   stat_reg_qword(sdb, false, buf, "total Mop fetch slip cycles", (qword_t*) &core->stat.Mop_fetch_slip, 0, TRUE, NULL);
@@ -350,47 +352,22 @@ void core_commit_DPM_t::step(void)
   enum commit_stall_t stall_reason = CSTALL_NONE;
   int branches_committed = 0;
 
-  /* This is just a deadlock watchdog.  If something got messed up
+  /* This is just a deadlock watchdog. If something got messed up
      in the pipeline and no forward progress is being made, this
-     code will eventually detect it and flush the pipeline in an
-     attempt to un-wedge the processor.  If the processor then
-     deadlocks again without having first made any more forward
-     progress, we give up and kill the simulator. */
-  if((core->sim_cycle - core->exec->last_completed) > deadlock_threshold)
+     code will eventually detect it. A global watchdog will check
+     if any core is making progress and accordingly if not.*/
+  if(core->current_thread->active && ((core->sim_cycle - core->exec->last_completed) > deadlock_threshold))
   {
-    if(core->exec->last_completed_count == core->stat.eio_commit_insn)
-    {
-      char buf[256];
-      snprintf(buf,sizeof(buf),"At cycle %llu, core[%d] has not completed a uop in %d cycles... definite deadlock",core->sim_cycle,core->id,deadlock_threshold);
+    deadlocked = true; 
 #ifdef ZTRACE
-      ztrace_print("DEADLOCK DETECTED: TERMINATING SIMULATION");
+    ztrace_print(core->id, "Possible deadlock detected.");
 #endif
-      zesto_fatal(buf,(void)0);
-    }
-    else
-    {
-      warn("At cycle %llu, core[%d] has not completed a uop in %d cycles... possible deadlock, flushing pipeline",core->sim_cycle,core->id,deadlock_threshold);
-#ifdef ZTRACE
-      ztrace_print("DEADLOCK DETECTED: FLUSHING PIPELINE");
-#endif
-
-      /* flush the entire pipeline, correct path or not... */
-      core->oracle->complete_flush();
-      /*core->commit->*/recover();
-      core->exec->recover();
-      core->alloc->recover();
-      core->decode->recover();
-      core->fetch->recover(core->current_thread->regs.regs_NPC);
-      ZESTO_STAT(stat_add_sample(core->stat.commit_stall, (int)CSTALL_EMPTY);)
-      ZESTO_STAT(core->stat.commit_deadlock_flushes++;)
-      core->exec->last_completed = core->sim_cycle; /* so we don't do this again next cycle */
-      core->exec->last_completed_count = core->stat.eio_commit_insn;
-    }
     return;
   }
 
-  /* deallocate at most one store from the (senior) STQ per cycle */
-  core->exec->STQ_deallocate_senior();
+  /* deallocate at most commit_width stores from the (senior) STQ per cycle */
+  for(int STQ_commit_count = 0; STQ_commit_count < knobs->commit.width; STQ_commit_count++)
+    core->exec->STQ_deallocate_senior();
 
   /* MAIN COMMIT LOOP */
   for(commit_count=0;commit_count<knobs->commit.width;commit_count++)
@@ -417,8 +394,7 @@ void core_commit_DPM_t::step(void)
       break;
     }
 
-    if(Mop->oracle.spec_mode)
-      zesto_fatal("oldest instruction in processor is on wrong-path",(void)0);
+    zesto_assert(!Mop->oracle.spec_mode, (void)0);
 
     /* Are all uops in the Mop completed? */
     if(Mop->commit.complete_index != -1) /* still some outstanding insts */
@@ -436,8 +412,8 @@ void core_commit_DPM_t::step(void)
 #endif
           if(Mop->fetch.bpred_update)
           {
-            core->fetch->bpred->update(Mop->fetch.bpred_update,Mop->decode.opflags,
-                Mop->fetch.PC, Mop->fetch.PC+Mop->fetch.inst.len, Mop->decode.targetPC, Mop->oracle.NextPC, (Mop->oracle.NextPC != (Mop->fetch.PC + Mop->fetch.inst.len)));
+            core->fetch->bpred->update(Mop->fetch.bpred_update, Mop->decode.opflags,
+                Mop->fetch.PC, Mop->fetch.ftPC, Mop->decode.targetPC, Mop->oracle.NextPC, Mop->oracle.taken_branch);
             core->fetch->bpred->return_state_cache(Mop->fetch.bpred_update);
             Mop->fetch.bpred_update = NULL;
           }
@@ -456,14 +432,16 @@ void core_commit_DPM_t::step(void)
       if(uop->decode.BOM && (uop->Mop->timing.when_commit_started == TICK_T_MAX))
         uop->Mop->timing.when_commit_started = core->sim_cycle;
 
-      if(uop->decode.is_load)
+      if(uop->decode.is_load || uop->decode.is_fence)
         core->exec->LDQ_deallocate(uop);
       else if(uop->decode.is_sta)
         core->exec->STQ_deallocate_sta();
       else if(uop->decode.is_std) /* we alloc on STA, dealloc on STD */
       {
-        if(!core->exec->STQ_deallocate_std(uop))
+        if(!core->exec->STQ_deallocate_std(uop)) {
+          stall_reason = CSTALL_STQ;
           break;
+        }
       }
 
       /* any remaining transactions in-flight (only for loads)
@@ -528,7 +506,9 @@ void core_commit_DPM_t::step(void)
 
       /* this cleans up idep/odep ptrs, register mappings, and
          commit stores to the real (non-spec) memory system */
+      lk_lock(&memory_lock, core->id+1);
       core->oracle->commit_uop(uop);
+      lk_unlock(&memory_lock);
 
       /* mark uop as committed in Mop */
       Mop->commit.commit_index += uop->decode.has_imm ? 3 : 1;
@@ -540,10 +520,9 @@ void core_commit_DPM_t::step(void)
         /* Update stats */
         if(Mop->uop[Mop->decode.last_uop_index].decode.EOM)
         {
-          core->stat.eio_commit_insn++;
           total_commit_insn ++;
           ZESTO_STAT(core->stat.commit_insn++;)
-          ZESTO_STAT(core->stat.commit_bytes += Mop->fetch.inst.len;) /* REP counts as only 1 fetch */
+          ZESTO_STAT(core->stat.commit_bytes += Mop->fetch.inst.len;)
         }
 
         if(Mop->decode.is_ctrl)
@@ -582,8 +561,6 @@ void core_commit_DPM_t::step(void)
             when_rep_fetched = Mop->timing.when_fetched;
             zesto_assert(Mop->timing.when_fetched != TICK_T_MAX,(void)0);
             zesto_assert(Mop->timing.when_fetch_started != TICK_T_MAX,(void)0);
-            zesto_assert(Mop->timing.when_fetched != 0,(void)0);
-            zesto_assert(Mop->timing.when_fetch_started != 0,(void)0);
             when_rep_decode_started = Mop->timing.when_decode_started;
             when_rep_commit_started = Mop->timing.when_commit_started;
           }
@@ -668,26 +645,16 @@ void core_commit_DPM_t::step(void)
           fprintf(stderr,"# Committed uop ");
         fprintf(stderr,"limit reached for core %d.\n",core->current_thread->id);
 
-        simulated_processes_remaining--;
         core->current_thread->active = false;
         core->fetch->bpred->freeze_stats();
         core->exec->freeze_stats();
         cache_freeze_stats(core);
         /* start this core over */
 
-        if(simulated_processes_remaining <= 0)
-          longjmp(sim_exit_buf, /* exitcode + fudge */0 + 1);
+        fatal("Per-thread limits not supported now");
       }
     }
 
-    /* Reset the trace (eio file input) if we've hit the end of the
-       trace.  This is used in multi-core simulation mode to keep
-       cores that have reached their simulation limits busy. */
-    if (trace_limit && (core->stat.eio_commit_insn >= trace_limit))
-    {
-      core->stat.eio_commit_insn = 0;
-      core->oracle->reset_execution();
-    }
   }
 
   ZESTO_STAT(stat_add_sample(core->stat.commit_stall, (int)stall_reason);)
@@ -750,7 +717,7 @@ core_commit_DPM_t::recover(const struct Mop_t * const Mop)
 
         /* In the following, we have to check it the uop has even been allocated yet... this has
            to do with our non-atomic implementation of allocation for fused-uops */
-        if(dead_uop->decode.is_load)
+        if(dead_uop->decode.is_load || dead_uop->decode.is_fence)
         {
           if(dead_uop->timing.when_allocated != TICK_T_MAX)
             core->exec->LDQ_squash(dead_uop);
@@ -877,7 +844,7 @@ core_commit_DPM_t::recover(void)
         /* In the following, we have to check it the uop has even
            been allocated yet... this has to do with our non-atomic
            implementation of allocation for fused-uops */
-        if(dead_uop->decode.is_load)
+        if(dead_uop->decode.is_load || dead_uop->decode.is_fence)
         {
           if(dead_uop->timing.when_allocated != TICK_T_MAX)
             core->exec->LDQ_squash(dead_uop);

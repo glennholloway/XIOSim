@@ -81,7 +81,6 @@ class core_exec_t
 
   /* watchdog for detecting dead/live-locked simulations */
   tick_t last_completed;
-  counter_t last_completed_count;
 
   core_exec_t(void);
   virtual ~core_exec_t();
@@ -148,6 +147,8 @@ class core_exec_t
   virtual void STQ_squash_sta(struct uop_t * const dead_uop) = 0;
   virtual void STQ_squash_std(struct uop_t * const dead_uop) = 0;
   virtual void STQ_squash_senior(void) = 0;
+  virtual void STQ_set_addr(struct uop_t * const uop) = 0;
+  virtual void STQ_set_data(struct uop_t * const uop) = 0;
 
   /* Just a sanity-check after a recovery that the exec-stage's
      microarchitectural state is consistent. */
@@ -159,11 +160,10 @@ class core_exec_t
   virtual void exec_insert(struct uop_t * const uop) = 0;
   virtual bool port_available(int port_ind) = 0;
   virtual bool exec_fused_ST(struct uop_t * const uop) = 0;
-  virtual void update_execution_otags(tick_t old_sim_cycle) = 0;
  
   protected:
   struct core_t * core;
-
+  enum cache_command get_STQ_request_type(const struct uop_t * uop);
 };
 
 void exec_reg_options(struct opt_odb_t * odb, struct core_knobs_t * knobs);

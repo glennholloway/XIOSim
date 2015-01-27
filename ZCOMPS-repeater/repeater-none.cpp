@@ -25,7 +25,7 @@ if(!strcasecmp(COMPONENT_NAME,type))
 #else
 class repeater_none_t: public repeater_t {
   public:
-    repeater_none_t(struct core_t * const _core, const char * const _name, struct cache_t * const _next_level) : repeater_t (_core, _name, _next_level) { };
+    repeater_none_t(struct core_t * const _core, const char * const _name, struct cache_t * const _next_level) : repeater_t (_core, _name, _next_level) { speed = 0.0; };
     virtual void step() { };
     virtual int enqueuable(const enum cache_command cmd, const int thread_id, const md_addr_t addr) { return false; }
     virtual void enqueue(const enum cache_command cmd,
@@ -33,9 +33,9 @@ class repeater_none_t: public repeater_t {
                 const md_addr_t addr,
                 void * const op,    /* To be passed to callback for identification */
                 void (*const cb)(void *, bool is_hit), /* Callback once request is finished */
-                seq_t (*const get_action_id)(void* const)) { cb(op, true); };
+                seq_t (*const get_action_id)(void* const)) { if (cb) cb(op, true); };
 
-    virtual void flush(void (*const cb)()) { cb(); };
+    virtual void flush(void (*const cb)()) { if (cb) cb(); };
 };
 
 #endif

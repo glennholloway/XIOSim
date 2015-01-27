@@ -72,6 +72,7 @@
  * Georgia Institute of Technology, Atlanta, GA 30332-0765
  */
 
+#include "misc.h"
 #include "sim.h"
 #include "thread.h"
 #include "synchronization.h"
@@ -86,7 +87,6 @@
 #include "zesto-cache.h"
 #include "zesto-commit.h"
 #include "zesto-bpred.h"
-#include "zesto-dumps.h"
 
 
 void commit_reg_options(struct opt_odb_t * odb, struct core_knobs_t * knobs)

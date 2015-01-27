@@ -88,9 +88,8 @@
 #include "zesto-memdep.h"
 #include "zesto-prefetch.h"
 #include "zesto-uncore.h"
-#include "zesto-dumps.h"
 #include "zesto-coherence.h"
-
+#include "helix.h"
 
 void exec_reg_options(struct opt_odb_t * odb, struct core_knobs_t * knobs)
 {
@@ -173,6 +172,8 @@ void exec_reg_options(struct opt_odb_t * odb, struct core_knobs_t * knobs)
       &knobs->exec.latency[FU_STA], /*default*/ knobs->exec.latency[FU_STA], /*print*/true,/*format*/NULL);
   opt_reg_int(odb, "-std:lat","ST-data execution latency [DS]",
       &knobs->exec.latency[FU_STD], /*default*/ knobs->exec.latency[FU_STD], /*print*/true,/*format*/NULL);
+  opt_reg_int(odb, "-agen:lat","LEA execution latency [DS]",
+      &knobs->exec.latency[FU_AGEN], /*default*/ knobs->exec.latency[FU_AGEN], /*print*/true,/*format*/NULL);
 
   /*******************************/
   /* functional unit issue rates */
@@ -202,6 +203,8 @@ void exec_reg_options(struct opt_odb_t * odb, struct core_knobs_t * knobs)
       &knobs->exec.issue_rate[FU_STA], /*default*/ knobs->exec.issue_rate[FU_STA], /*print*/true,/*format*/NULL);
   opt_reg_int(odb, "-std:rate","ST-data execution issue rate [DS]",
       &knobs->exec.issue_rate[FU_STD], /*default*/ knobs->exec.issue_rate[FU_STD], /*print*/true,/*format*/NULL);
+  opt_reg_int(odb, "-agen:rate","LEA execution issue rate [DS]",
+      &knobs->exec.issue_rate[FU_AGEN], /*default*/ knobs->exec.issue_rate[FU_AGEN], /*print*/true,/*format*/NULL);
 
   /***************/
   /* data caches */
@@ -222,7 +225,7 @@ void exec_reg_options(struct opt_odb_t * odb, struct core_knobs_t * knobs)
 
   opt_reg_string_list(odb, "-dl1:pf", "1st-level data cache prefetcher configuration string(s) [DS]",
       knobs->memory.DL1PF_opt_str, MAX_PREFETCHERS, &knobs->memory.DL1_num_PF, knobs->memory.DL1PF_opt_str, /* print */true, /* format */NULL, /* !accrue */false);
-  opt_reg_string_list(odb, "-dl2:pf", "1st-level data cache prefetcher configuration string(s) [DS]",
+  opt_reg_string_list(odb, "-dl2:pf", "2nd-level data cache prefetcher configuration string(s) [DS]",
       knobs->memory.DL2PF_opt_str, MAX_PREFETCHERS, &knobs->memory.DL2_num_PF, knobs->memory.DL2PF_opt_str, /* print */true, /* format */NULL, /* !accrue */false);
 
   /* DL1 prefetch control options */
@@ -269,9 +272,6 @@ void exec_reg_options(struct opt_odb_t * odb, struct core_knobs_t * knobs)
   opt_reg_flag(odb, "-dl2:pf:miss","generate DL2 prefetches only from miss traffic [DS]",
       &knobs->memory.DL2_PF_on_miss, /*default*/ false, /*print*/true,/*format*/NULL);
 
-  opt_reg_flag(odb, "-warm:caches","warm caches during functional fast-forwarding [DS]",
-      &knobs->memory.warm_caches, /*default*/ false, /*print*/true,/*format*/NULL);
-
   opt_reg_flag(odb, "-repeater:DL1_request","send request to L1 in parallel with repeater",
       &knobs->memory.DL1_rep_req, /*default*/ false, /*print*/true,/*format*/NULL);
 
@@ -295,7 +295,7 @@ void exec_reg_options(struct opt_odb_t * odb, struct core_knobs_t * knobs)
 
 /* default constructor */
 core_exec_t::core_exec_t(void):
-  last_completed(0), last_completed_count(0)
+  last_completed(0)
 {
 }
 
@@ -308,6 +308,15 @@ core_exec_t::~core_exec_t()
 void core_exec_t::update_last_completed(tick_t now)
 {
   last_completed = now;
+  core->commit->deadlocked = false;
+}
+
+enum cache_command core_exec_t::get_STQ_request_type(const struct uop_t * const uop)
+{
+  if(!uop->oracle.is_sync_op)
+    return CACHE_WRITE;
+
+  return is_addr_helix_signal(uop->oracle.virt_addr) ? CACHE_SIGNAL : CACHE_WAIT;
 }
 
 extern int min_coreID;

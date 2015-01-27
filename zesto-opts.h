@@ -85,10 +85,6 @@ extern FILE * ztrace_fp;
 
 #define ZESTO_STAT(x) {if(core->current_thread->active) {x}}
 
-/* variables for fast-forwarding prior to detailed simulation */
-extern long long fastfwd;
-extern long long trace_limit;
-
 /* maximum number of inst's to execute */
 extern long long max_insts;
 extern long long max_uops;
@@ -109,14 +105,19 @@ extern int sim_elapsed_time;
 
 #ifdef ZTRACE
 void ztrace_print(const struct Mop_t * Mop);
+void ztrace_Mop_timing(const struct Mop_t * Mop);
 void ztrace_print(const struct Mop_t * Mop, const char * fmt, ... );
 void ztrace_print(const struct uop_t * uop, const char * fmt, ... );
-void ztrace_print(const char * fmt, ... );
+void ztrace_print(const int coreID, const char * fmt, ... );
 
 // used to print out one line in the log, but broken up over multiple commands
 void ztrace_print_start(const struct uop_t * uop, const char * fmt, ... );
-void ztrace_print_cont(const char * fmt, ... );
-void ztrace_print_finish(const char * fmt, ... );
+void ztrace_print_cont(const int coreID, const char * fmt, ... );
+void ztrace_print_finish(const int coreID, const char * fmt, ... );
+
+void ztrace_uop_ID(const struct uop_t * uop);
+void ztrace_uop_alloc(const struct uop_t * uop);
+void ztrace_uop_timing(const struct uop_t * uop);
 #endif
 
 #endif /* ZESTO_OPTS_INCLUDED */
