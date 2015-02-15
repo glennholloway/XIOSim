@@ -1921,7 +1921,7 @@ md_print_uop_1(struct uop_t *uop,
 void
 trace_fp_regfile(const int coreID, const md_fpr_t *regs_F, const md_ctrl_t  *regs_C)
 {
-   int top = FSW_TOP(regs_C->fsw);
+// int top = FSW_TOP(regs_C->fsw);
    char buff[2*MD_FPR_SIZE+1] = "";
    char tmp[3];
 

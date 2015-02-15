@@ -919,7 +919,6 @@ bool core_exec_DPM_t::check_load_issue_conditions(const struct uop_t * const uop
   struct core_knobs_t * knobs = core->knobs;
   /* are all previous STA's known? If there's a match, is the STD ready? */
   bool sta_unknown = false;
-  bool regular_match = false;
   bool partial_match = false;
   bool oracle_regular_match = false;
   bool oracle_partial_match = false;
@@ -979,7 +978,6 @@ bool core_exec_DPM_t::check_load_issue_conditions(const struct uop_t * const uop
       if((match_index == -1) && (STQ[i].addr_valid))
       {
         match_index = i;
-        regular_match = true;
       }
 
       if(oracle_index == -1)

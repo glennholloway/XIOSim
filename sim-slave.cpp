@@ -284,7 +284,7 @@ sim_post_init(void)
   if(!threads)
     fatal("failed to calloc threads");
 
-  mem_t *mem; /* the one and only virtual memory space in multithreaded mode */
+  mem_t *mem = NULL; /* the one and only virtual memory space in multithreaded mode */
   if(multi_threaded)
   {
     mem = mem_create("mem");

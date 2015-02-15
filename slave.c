@@ -94,7 +94,7 @@ int
 Zesto_SlaveInit(int argc, char **argv)
 {
   char *s;
-  int i, exit_code;
+  int i;
 
   /* register an error handler */
   fatal_hook(sim_print_stats);
